@@ -1,0 +1,7 @@
+[package]
+name = "inflow-server"
+version = "0.1.0"
+authors = ["Иван Плесских <terma95@gmail.com>"]
+
+[dependencies]
+ws = "*"
