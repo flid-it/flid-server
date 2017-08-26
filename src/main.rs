@@ -76,10 +76,17 @@ impl PlayerHandler {
 
 fn main() {
     let args: Vec<_> = env::args().collect();
+    let addr;
     if args.len() < 3 {
-        panic!("Needed IP and port!");
+        let port = match env::var("PORT") {
+            Ok(val) => val,
+            Err(_) => "3003".to_string(),
+        };
+        println!("Needed IP and port, so use default");
+        addr = format!("0.0.0.0:{}", port);
+    } else {
+        addr = format!("{}:{}", args[1], args[2]);
     }
-    let addr = format!("{}:{}", args[1], args[2]);
 
     let (to_game, from_players) = channel();
 
