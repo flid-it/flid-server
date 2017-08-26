@@ -1,6 +1,7 @@
 language: rust
 rust:
 - beta
+cache: cargo
 deploy:
   provider: heroku
   api_key:
