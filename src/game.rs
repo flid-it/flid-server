@@ -59,6 +59,7 @@ pub struct Node {
 #[derive(Copy, Clone, Debug)]
 pub struct Link {
     id: LinkId,
+    quality: f32,
     n1: NodeId,
     n2: NodeId,
 }
@@ -67,12 +68,7 @@ impl Link {
     fn has_id(&self, id: &NodeId) -> bool {
         self.n1 == *id || self.n2 == *id
     }
-    fn has(&self, node: &Node) -> bool {
-        self.has_id(&node.id)
-    }
-    fn between(&self, n1: &Node, n2: &Node) -> bool {
-        self.has_id(&n1.id) && self.has_id(&n2.id)
-    }
+
     fn between_ids(&self, n1: &NodeId, n2: &NodeId) -> bool {
         self.has_id(n1) && self.has_id(n2)
     }
@@ -153,7 +149,7 @@ fn get_nearest_nodes(pos: &Point, nodes: &[Node], n: usize, dist: f32) -> Vec<No
 
     let mut res = vec!();
     for node in &source {
-        if dist == 0f32 || pos.dist(node.pos) < dist {
+        if dist == 0. || pos.dist(node.pos) < dist {
             res.push(node.clone())
         }
         if res.len() >= n {
@@ -186,12 +182,11 @@ fn gen_links(nodes: &[Node]) -> Vec<Link> {
     let mut res: Vec<Link> = vec!();
     for &node in nodes {
         let links_count = rng.gen_range(2, 5) + 1;
-        let mut nearest = get_nearest_nodes(&node.pos, nodes, links_count, 0f32);
-        nearest.swap_remove(0);
+        let nearest = get_nearest_nodes(&node.pos, nodes, links_count, 0.)[1..].to_vec();
         for n in &nearest {
             if let None = res.iter().find(|l| l.between_ids(&node.id, &n.id)) {
                 let id = res.len();
-                res.push(Link{id, n1: node.id, n2: n.id});
+                res.push(Link{id, quality: rng.gen_range(0.01, 0.99), n1: node.id, n2: n.id});
             }
         }
     }
