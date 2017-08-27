@@ -1,5 +1,8 @@
 #![feature(mpsc_select)]
 
+#[macro_use]
+extern crate log;
+extern crate env_logger;
 extern crate ws;
 extern crate rand;
 extern crate serde;
@@ -32,17 +35,26 @@ struct PlayerHandler {
 
 impl Handler for PlayerHandler {
     fn on_open(&mut self, _: ws::Handshake) -> ws::Result<()> {
-        println!("Connection opened!");
+        debug!("Player {} open connection", self.id);
         self.to_dispatcher.send(ServerEvent::NewPlayer {id: self.id, ws: self.ws.clone()}).unwrap();
-        self.to_game.send(self.personal(Request::NewPlayer)).unwrap();
         Ok(())
     }
 
     fn on_message(&mut self, msg: ws::Message) -> ws::Result<()> {
-        println!("Message received: {}", msg);
+        debug!("Player {} send message: {}", self.id, msg);
 
-        let r = from_str(msg.as_text().unwrap()).unwrap();
-        self.to_game.send(self.personal(r)).unwrap();
+        if msg.is_text() {
+            match from_str(msg.as_text().unwrap()) {
+                Ok(r) => {
+                    self.to_game.send(personal(self.id, r)).unwrap();
+                }
+                Err(_) => {
+                    debug!("Player {} sent wrong message!", self.id)
+                }
+            }
+        } else {
+            debug!("Player {} sent non-text message!", self.id)
+        }
 
         return Ok(())
     }
@@ -50,16 +62,10 @@ impl Handler for PlayerHandler {
     fn on_close(&mut self, code: CloseCode, reason: &str) {
         self.to_dispatcher.send(ServerEvent::PlayerExit {id: self.id}).unwrap();
         match code {
-            CloseCode::Normal => println!("The client is done with the connection."),
-            CloseCode::Away   => println!("The client is leaving the site."),
-            _ => println!("The client encountered an error: {}", reason),
+            CloseCode::Normal => debug!("Player {} is done", self.id),
+            CloseCode::Away   => debug!("Player {} is leaving the site", self.id),
+            _ => debug!("Player {} encountered an error: {}", self.id, reason),
         }
-    }
-}
-
-impl PlayerHandler {
-    fn personal(&self, r: Request) -> PersonalRequest {
-        PersonalRequest{player: self.id, request: r}
     }
 }
 
@@ -71,6 +77,7 @@ fn send_to(ws: &ws::Sender, response: &Response) -> bool {
 }
 
 fn send(list: &HashMap<PlayerId, ws::Sender>, addr: &Address, response: &Response) {
+    debug!("Send response to {:?}: {:?}", addr, response);
     match *addr {
         Address::Player(ref id) => {
             send_to(&list[id], response);
@@ -88,7 +95,15 @@ fn send(list: &HashMap<PlayerId, ws::Sender>, addr: &Address, response: &Respons
     }
 }
 
-fn dispatch(from_server: Receiver<ServerEvent>, from_game: Receiver<AddressResponse>) {
+fn personal(id: PlayerId, r: Request) -> PersonalRequest {
+    PersonalRequest{player: id, request: r}
+}
+
+fn dispatch(
+    from_server: Receiver<ServerEvent>,
+    from_game: Receiver<AddressResponse>,
+    to_game: Sender<PersonalRequest>)
+{
     let mut to_players: HashMap<PlayerId, ws::Sender> = HashMap::new();
     loop {
         select! {
@@ -96,9 +111,12 @@ fn dispatch(from_server: Receiver<ServerEvent>, from_game: Receiver<AddressRespo
                 let event = server_event.unwrap();
                 match event {
                     ServerEvent::NewPlayer{id, ws} => {
+                        debug!("Added player {} to dispatcher", id);
                         to_players.insert(id, ws);
+                        to_game.send(personal(id, Request::NewPlayer)).unwrap();
                     }
                     ServerEvent::PlayerExit{id} => {
+                debug!("Remove player {} from dispatcher", id);
                         to_players.remove(&id);
                     }
                 }
@@ -113,18 +131,19 @@ fn dispatch(from_server: Receiver<ServerEvent>, from_game: Receiver<AddressRespo
 
 
 fn main() {
+    env_logger::init().unwrap();
+
     let args: Vec<_> = env::args().collect();
     let addr;
     let default_port = 3003;
     let port = if args.len() < 2 {
-        print!("Needed port, so use ");
         match env::var("PORT") {
             Ok(val) => {
-                println!("$PORT ({})", val);
+                debug!("Needed port, so use $PORT ({})", val);
                 val
             },
             Err(_) => {
-                println!("default ({})", default_port);
+                debug!("Needed port, so use default ({})", default_port);
                 default_port.to_string()
             },
         }
@@ -137,25 +156,27 @@ fn main() {
     let (to_dispatcher, from_server) = channel();
     let (to_dispatcher_game, from_game) = channel();
 
+    let to_game2 = to_game.clone();
+
     let g = Game::new();
 
-    thread::spawn(move|| {
-        dispatch(from_server, from_game);
+    thread::spawn(|| {
+        dispatch(from_server, from_game, to_game);
     });
 
-    thread::spawn(move|| {
+    thread::spawn(|| {
         g.main_loop(from_players, to_dispatcher_game);
     });
 
     let mut last_id = 0;
 
-    println!("Server started at {}", addr);
+    debug!("Server started at {}", addr);
     listen(addr, |ws| {
         last_id += 1;
         PlayerHandler {
             id: last_id,
             ws,
-            to_game: to_game.clone(),
+            to_game: to_game2.clone(),
             to_dispatcher: to_dispatcher.clone()
         }
     }).unwrap();

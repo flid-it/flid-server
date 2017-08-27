@@ -85,7 +85,7 @@ impl Game {
         loop {
             let p_req = incoming.recv().unwrap();
             let id = p_req.player;
-            println!("Game process request: {:?}", p_req);
+            debug!("Game request: {:?}", p_req);
 
             let resp = match p_req.request {
                 Request::NewPlayer => {
@@ -108,7 +108,7 @@ impl Game {
                     }
                 }
             };
-            println!("Send response: {:?}", resp);
+            debug!("Game response: {:?}", resp);
             outgoing.send(resp).unwrap();
         }
     }
