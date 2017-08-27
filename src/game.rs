@@ -4,6 +4,7 @@ use std::sync::mpsc::{Sender, Receiver};
 pub type PlayerId = usize;
 pub type NodeId = usize;
 pub type LinkId = usize;
+pub type FlowId = usize;
 
 #[derive(Clone, Debug)]
 #[derive(Serialize)]
@@ -64,6 +65,35 @@ pub struct Link {
     n2: NodeId,
 }
 
+#[derive(Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug)]
+enum FlowHost {
+    Link(LinkId),
+    Node(NodeId),
+}
+
+#[derive(Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug)]
+pub struct Flow {
+    id: FlowId,
+    amount: f32,
+    host: FlowHost,
+}
+
+#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug)]
+pub struct Game {
+    pub nodes: Vec<Node>,
+    pub links: Vec<Link>,
+    pub flows: Vec<Flow>,
+}
+
+impl Point {
+    fn dist(self, other: Point) -> f32 {
+        (((self.x - other.x).pow(2) + (self.y - other.y).pow(2)) as f32).sqrt()
+    }
+}
+
 impl Link {
     fn has_id(&self, id: &NodeId) -> bool {
         self.n1 == *id || self.n2 == *id
@@ -74,32 +104,18 @@ impl Link {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-#[derive(Clone, Debug)]
-pub struct Game {
-    pub nodes: Vec<Node>,
-    pub links: Vec<Link>,
-}
-
-impl Point {
-    fn dist(self, other: Point) -> f32 {
-        (((self.x - other.x).pow(2) + (self.y - other.y).pow(2)) as f32).sqrt()
-    }
-}
-
-impl Node {
-}
-
 impl Game {
     pub fn new() -> Game {
         let nodes = gen_nodes(100);
         let links = gen_links(&nodes);
-        Game {nodes, links}
+        let flows = gen_flows(&nodes, &links);
+        Game {nodes, links, flows}
     }
 
     pub fn renew(&mut self) {
         self.nodes = gen_nodes(100);
         self.links = gen_links(&self.nodes);
+        self.flows = gen_flows(&self.nodes, &self.links);
     }
 
     pub fn main_loop(mut self,
@@ -160,21 +176,21 @@ fn get_nearest_nodes(pos: &Point, nodes: &[Node], n: usize, dist: f32) -> Vec<No
 }
 
 fn gen_nodes(n: usize) -> Vec<Node> {
-    let mut nodes: Vec<Node> = vec!();
+    let mut res = vec!();
     let mut rng = thread_rng();
 
-    while nodes.len() < n {
+    while res.len() < n {
         let x = rng.gen_range(-1000, 1000);
         let y = rng.gen_range(-1000, 1000);
         let pos = Point{x, y};
-        if get_nearest_nodes(&pos, &nodes, 1, 100f32).len() > 0 {
+        if get_nearest_nodes(&pos, &res, 1, 100f32).len() > 0 {
             continue;
         }
 
-        let node = Node{id: nodes.len(), pos, size: rng.gen_range(0.5, 1.5)};
-        nodes.push(node)
+        let node = Node{id: res.len(), pos, size: rng.gen_range(0.5, 1.5)};
+        res.push(node)
     }
-    nodes
+    res
 }
 
 fn gen_links(nodes: &[Node]) -> Vec<Link> {
@@ -189,6 +205,19 @@ fn gen_links(nodes: &[Node]) -> Vec<Link> {
                 res.push(Link{id, quality: rng.gen_range(0.01, 0.99), n1: node.id, n2: n.id});
             }
         }
+    }
+    res
+}
+
+fn gen_flows(nodes: &[Node], links: &[Link]) -> Vec<Flow> {
+    let mut res = vec!();
+    for &node in nodes {
+        let id = res.len();
+        res.push(Flow{id, amount: 0., host: FlowHost::Node(node.id)});
+    }
+    for &link in links {
+        let id = res.len();
+        res.push(Flow{id, amount: 0., host: FlowHost::Link(link.id)});
     }
     res
 }
