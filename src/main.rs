@@ -69,27 +69,31 @@ impl Handler for PlayerHandler {
     }
 }
 
-fn send_to(ws: &ws::Sender, response: &Response) -> bool {
-    match ws.send(ws::Message::from(to_string(response).unwrap())) {
-        Err(_) => false,
-        Ok(_) => true,
+fn send_to(ws: Option<&ws::Sender>, response: &Response) -> bool {
+    match ws {
+        None => false,
+        Some(ws) => match ws.send(ws::Message::from(to_string(response).unwrap())) {
+            Err(_) => false,
+            Ok(_) => true,
+        }
     }
+
 }
 
 fn send(list: &HashMap<PlayerId, ws::Sender>, addr: &Address, response: &Response) {
     debug!("Send response to {:?}: {:?}", addr, response);
     match *addr {
         Address::Player(ref id) => {
-            send_to(&list[id], response);
+            send_to(list.get(id), response);
         }
         Address::SomePlayers(ref ids) => {
             for id in ids {
-                send_to(&list[&id], response);
+                send_to(list.get(id), response);
             }
         }
         Address::All => {
             for ref ws in list.values() {
-                send_to(&ws, response);
+                send_to(Some(ws), response);
             }
         }
     }
@@ -116,7 +120,7 @@ fn dispatch(
                         to_game.send(personal(id, Request::NewPlayer)).unwrap();
                     }
                     ServerEvent::PlayerExit{id} => {
-                debug!("Remove player {} from dispatcher", id);
+                        debug!("Remove player {} from dispatcher", id);
                         to_players.remove(&id);
                     }
                 }
