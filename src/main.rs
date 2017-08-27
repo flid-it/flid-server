@@ -1,7 +1,8 @@
+#![feature(mpsc_select)]
+
 extern crate ws;
 extern crate rand;
 extern crate serde;
-#[macro_use]
 extern crate serde_json;
 #[macro_use]
 extern crate serde_derive;
@@ -12,48 +13,42 @@ use std::env;
 use std::thread;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Sender, Receiver};
-use ws::{WebSocket, Handler, Factory, CloseCode};
-use serde_json::{Value, to_string, from_str, to_value};
+use ws::{listen, Handler, CloseCode};
+use serde_json::{to_string, from_str};
 
-use game::{Game, Response, Request, PlayerId};
+use game::{Game, Response, Address, AddressResponse, Request, PersonalRequest, PlayerId};
 
-struct Server {
-    to_game: Sender<Request>
+enum ServerEvent {
+    NewPlayer {id: PlayerId, ws: ws::Sender},
+    PlayerExit {id: PlayerId},
 }
 
 struct PlayerHandler {
+    id: PlayerId,
     ws: ws::Sender,
-    to_game: Sender<Request>,
-    from_game: Receiver<Response>,
-    to_me: Sender<Response>,
-}
-
-
-impl Factory for Server {
-    type Handler = PlayerHandler;
-
-    fn connection_made(&mut self, ws: ws::Sender) -> PlayerHandler {
-        let (to_me, from_game) = channel();
-        PlayerHandler {ws: ws, to_game: self.to_game.clone(), from_game, to_me}
-    }
+    to_game: Sender<PersonalRequest>,
+    to_dispatcher: Sender<ServerEvent>,
 }
 
 impl Handler for PlayerHandler {
     fn on_open(&mut self, _: ws::Handshake) -> ws::Result<()> {
         println!("Connection opened!");
-        self.to_game.send(Request::NewPlayer(self.ws.clone())).unwrap();
+        self.to_dispatcher.send(ServerEvent::NewPlayer {id: self.id, ws: self.ws.clone()}).unwrap();
+        self.to_game.send(self.personal(Request::NewPlayer)).unwrap();
         Ok(())
     }
 
     fn on_message(&mut self, msg: ws::Message) -> ws::Result<()> {
         println!("Message received: {}", msg);
 
-        let r: Request = from_str(msg.as_text().unwrap()).unwrap();
-        self.on_game_request(r);
+        let r = from_str(msg.as_text().unwrap()).unwrap();
+        self.to_game.send(self.personal(r)).unwrap();
+
         return Ok(())
     }
 
     fn on_close(&mut self, code: CloseCode, reason: &str) {
+        self.to_dispatcher.send(ServerEvent::PlayerExit {id: self.id}).unwrap();
         match code {
             CloseCode::Normal => println!("The client is done with the connection."),
             CloseCode::Away   => println!("The client is leaving the site."),
@@ -63,91 +58,105 @@ impl Handler for PlayerHandler {
 }
 
 impl PlayerHandler {
-    fn on_game_request(&self, req: Request) {
-        //println!("Request: {:?}", req);
-        self.to_game.send(req).unwrap();
-    }
-
-    fn on_game_response(&self, resp: Response) {
-        //println!("Response: {:?}", resp);
-        self.ws.send(ws::Message::from(to_string(&resp).unwrap())).unwrap();
+    fn personal(&self, r: Request) -> PersonalRequest {
+        PersonalRequest{player: self.id, request: r}
     }
 }
+
+fn send_to(ws: &ws::Sender, response: &Response) -> bool {
+    match ws.send(ws::Message::from(to_string(response).unwrap())) {
+        Err(_) => false,
+        Ok(_) => true,
+    }
+}
+
+fn send(list: &HashMap<PlayerId, ws::Sender>, addr: &Address, response: &Response) {
+    match *addr {
+        Address::Player(ref id) => {
+            send_to(&list[id], response);
+        }
+        Address::SomePlayers(ref ids) => {
+            for id in ids {
+                send_to(&list[&id], response);
+            }
+        }
+        Address::All => {
+            for ref ws in list.values() {
+                send_to(&ws, response);
+            }
+        }
+    }
+}
+
+fn dispatch(from_server: Receiver<ServerEvent>, from_game: Receiver<AddressResponse>) {
+    let mut to_players: HashMap<PlayerId, ws::Sender> = HashMap::new();
+    loop {
+        select! {
+            server_event = from_server.recv() => {
+                let event = server_event.unwrap();
+                match event {
+                    ServerEvent::NewPlayer{id, ws} => {
+                        to_players.insert(id, ws);
+                    }
+                    ServerEvent::PlayerExit{id} => {
+                        to_players.remove(&id);
+                    }
+                }
+            },
+            game_response = from_game.recv() => {
+                let response = game_response.unwrap();
+                send(&to_players, &response.whom, &response.response);
+            }
+        }
+    }
+}
+
 
 fn main() {
     let args: Vec<_> = env::args().collect();
     let addr;
-    if args.len() < 3 {
-        let port = match env::var("PORT") {
-            Ok(val) => val,
-            Err(_) => "3003".to_string(),
-        };
-        println!("Needed IP and port, so use default");
-        addr = format!("0.0.0.0:{}", port);
+    let default_port = 3003;
+    let port = if args.len() < 2 {
+        print!("Needed port, so use ");
+        match env::var("PORT") {
+            Ok(val) => {
+                println!("$PORT ({})", val);
+                val
+            },
+            Err(_) => {
+                println!("default ({})", default_port);
+                default_port.to_string()
+            },
+        }
     } else {
-        addr = format!("{}:{}", args[1], args[2]);
-    }
+        args[1].to_string()
+    };
+    addr = format!("0.0.0.0:{}", port);
 
     let (to_game, from_players) = channel();
+    let (to_dispatcher, from_server) = channel();
+    let (to_dispatcher_game, from_game) = channel();
 
-    let mut g = Game::new();
+    let g = Game::new();
 
     thread::spawn(move|| {
-        let mut players: HashMap<PlayerId, ws::Sender> = HashMap::new();
-        let mut last_id = 1;
-        loop {
-            let req = from_players.recv().unwrap();
-            //println!("Game proc request: {:?}", req);
-
-            let (id, resp) = match req {
-                Request::NewPlayer(ref sender) => {
-                    let id = last_id;
-                    last_id += 1;
-                    players.insert(id, sender.clone());
-
-                    (id, Response::SetPlayer {id})
-                }
-                Request::GetState{id} => {
-                    (id, Response::GameState {nodes: g.nodes.clone()})
-                }
-                Request::Restart => {
-                    g.renew();
-                    (0, Response::GameState {nodes: g.nodes.clone()})
-                }
-            };
-            //println!("Send response to {}: {:?}", id, resp);
-
-            let mut to_drop = vec!();
-            {
-                let mut addrs = vec!();
-                if id > 0 {
-                    addrs.push((&id, &players[&id]));
-                } else {
-                    println!("Broadcast to {} clients", players.len());
-                    addrs.extend(players.iter());
-                }
-                for &(&id, ref player) in &addrs {
-                    if !send_to(&player, &resp) {
-                        println!("Cannot send to {}, off it", id);
-                        to_drop.push(id);
-                    }
-                }
-            }
-
-            for id in to_drop {
-                players.remove(&id);
-            }
-        }
+        dispatch(from_server, from_game);
     });
 
-    let server = Server { to_game };
-    println!("Server started at {}", addr);
-    WebSocket::new(server).unwrap().listen(addr).unwrap();
-}
+    thread::spawn(move|| {
+        g.main_loop(from_players, to_dispatcher_game);
+    });
 
-fn send_to(ws: &ws::Sender, resp: &Response) -> bool {
-    match ws.send(ws::Message::from(to_string(resp).unwrap())) {
-        Err(_) => false,
-        Ok(_) => true,
-    }
+    let mut last_id = 0;
+
+    println!("Server started at {}", addr);
+    listen(addr, |ws| {
+        last_id += 1;
+        PlayerHandler {
+            id: last_id,
+            ws,
+            to_game: to_game.clone(),
+            to_dispatcher: to_dispatcher.clone()
+        }
+    }).unwrap();
 }

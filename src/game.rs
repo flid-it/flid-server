@@ -1,6 +1,5 @@
 use rand::{thread_rng, Rng};
 use std::sync::mpsc::{Sender, Receiver};
-use ws;
 
 pub type PlayerId = usize;
 
@@ -8,18 +7,35 @@ pub type PlayerId = usize;
 #[derive(Serialize)]
 #[serde(tag = "type")]
 pub enum Response {
-    SetPlayer {id: PlayerId},
     GameState {nodes: Vec<Node>},
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
+pub enum Address {
+    Player(PlayerId),
+    SomePlayers(Vec<PlayerId>),
+    All,
+}
+
+#[derive(Clone, Debug)]
+pub struct AddressResponse {
+    pub whom: Address,
+    pub response: Response,
+}
+
+#[derive(Clone, Debug)]
 #[derive(Deserialize)]
 #[serde(tag = "type")]
 pub enum Request {
-    #[serde(skip_deserializing)]
-    NewPlayer(ws::Sender),
-    GetState{id: PlayerId},
+    NewPlayer,
+    GetState,
     Restart,
+}
+
+#[derive(Clone, Debug)]
+pub struct PersonalRequest {
+    pub player: PlayerId,
+    pub request: Request,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -58,12 +74,46 @@ impl Game {
     pub fn new() -> Game {
         Game {nodes: gen_nodes(100)}
     }
+
     pub fn renew(&mut self) {
         self.nodes = gen_nodes(100);
     }
+
+    pub fn main_loop(mut self,
+                     incoming: Receiver<PersonalRequest>,
+                     outgoing: Sender<AddressResponse>) {
+        loop {
+            let p_req = incoming.recv().unwrap();
+            let id = p_req.player;
+            println!("Game process request: {:?}", p_req);
+
+            let resp = match p_req.request {
+                Request::NewPlayer => {
+                    AddressResponse {
+                        whom: Address::Player(id),
+                        response: Response::GameState {nodes: self.nodes.clone()}
+                    }
+                }
+                Request::GetState => {
+                    AddressResponse {
+                        whom: Address::Player(id),
+                        response: Response::GameState {nodes: self.nodes.clone()}
+                    }
+                }
+                Request::Restart => {
+                    self.renew();
+                    AddressResponse{
+                        whom: Address::All,
+                        response: Response::GameState {nodes: self.nodes.clone()}
+                    }
+                }
+            };
+            println!("Send response: {:?}", resp);
+            outgoing.send(resp).unwrap();
+        }
+    }
 }
 
-//if dist<0 we don't sort anything, just take first n nodes with distance < abs(dist)
 fn get_nearest_nodes(x: i64, y: i64, nodes: &[Node], n: usize, dist: f32) -> Vec<Node> {
     let mut n = n;
 
