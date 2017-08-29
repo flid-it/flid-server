@@ -1,1 +1,1 @@
-# inflow-server [![Build Status](https://travis-ci.org/Amareis/inflow-server.svg?branch=master)](https://travis-ci.org/Amareis/inflow-server)
+# ff-server [![Build Status](https://travis-ci.org/flowfield/ff-server.svg?branch=master)](https://travis-ci.org/flowfield/ff-server)

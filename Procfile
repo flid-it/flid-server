@@ -1,1 +1,1 @@
-web: ./target/release/inflow-server
+web: ./target/release/ff-server
