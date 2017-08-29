@@ -5,7 +5,7 @@ extern crate log;
 extern crate env_logger;
 extern crate ws;
 extern crate rand;
-extern crate serde;
+extern crate time;
 extern crate serde_json;
 #[macro_use]
 extern crate serde_derive;
@@ -86,11 +86,11 @@ fn send(list: &HashMap<PlayerId, ws::Sender>, addr: &Address, response: &Respons
         Address::Player(ref id) => {
             send_to(list.get(id), response);
         }
-        Address::SomePlayers(ref ids) => {
+        /*Address::SomePlayers(ref ids) => {
             for id in ids {
                 send_to(list.get(id), response);
             }
-        }
+        }*/
         Address::All => {
             for ref ws in list.values() {
                 send_to(Some(ws), response);

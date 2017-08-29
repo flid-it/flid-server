@@ -1,5 +1,6 @@
 use rand::{thread_rng, Rng};
 use std::sync::mpsc::{Sender, Receiver};
+use time::precise_time_s;
 
 pub type PlayerId = usize;
 pub type NodeId = usize;
@@ -11,12 +12,13 @@ pub type FlowId = usize;
 #[serde(tag = "type")]
 pub enum Response {
     GameState(Game),
+    FlowState{flows: Vec<Flow>},
 }
 
 #[derive(Clone, Debug)]
 pub enum Address {
     Player(PlayerId),
-    SomePlayers(Vec<PlayerId>),
+    //SomePlayers(Vec<PlayerId>),
     All,
 }
 
@@ -33,6 +35,7 @@ pub enum Request {
     NewPlayer,
     GetState,
     Restart,
+    Calc,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -118,9 +121,21 @@ impl Game {
         self.flows = gen_flows(&self.nodes, &self.links);
     }
 
+    pub fn calc(&mut self, old_time: f64) -> f64 {
+        let new_time = precise_time_s();
+        let dtime = new_time - old_time;
+        for f in &mut self.flows {
+            if let FlowHost::Node(id) = f.host {
+                f.amount += self.nodes.iter().find(|n| n.id == id).unwrap().size * dtime as f32;
+            }
+        }
+        new_time
+    }
+
     pub fn main_loop(mut self,
                      incoming: Receiver<PersonalRequest>,
                      outgoing: Sender<AddressResponse>) {
+        let mut t = precise_time_s();
         loop {
             let p_req = incoming.recv().unwrap();
             let id = p_req.player;
@@ -128,12 +143,14 @@ impl Game {
 
             let resp = match p_req.request {
                 Request::NewPlayer => {
+                    t = self.calc(t);
                     AddressResponse {
                         whom: Address::Player(id),
                         response: Response::GameState(self.clone())
                     }
                 }
                 Request::GetState => {
+                    t = self.calc(t);
                     AddressResponse {
                         whom: Address::Player(id),
                         response: Response::GameState(self.clone())
@@ -141,9 +158,17 @@ impl Game {
                 }
                 Request::Restart => {
                     self.renew();
+                    t = precise_time_s();
                     AddressResponse{
                         whom: Address::All,
                         response: Response::GameState(self.clone())
+                    }
+                }
+                Request::Calc => {
+                    t = self.calc(t);
+                    AddressResponse{
+                        whom: Address::All,
+                        response: Response::FlowState{flows: self.flows.clone()}
                     }
                 }
             };
