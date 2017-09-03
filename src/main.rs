@@ -83,6 +83,7 @@ fn send_to(ws: Option<&ws::Sender>, response: &Response) -> bool {
 fn send(list: &HashMap<PlayerId, ws::Sender>, addr: &Address, response: &Response) {
     debug!("Send response to {:?}: {:?}", addr, response);
     match *addr {
+        Address::None => debug!("Some answer to no one"),
         Address::Player(ref id) => {
             send_to(list.get(id), response);
         }
@@ -96,7 +97,7 @@ fn send(list: &HashMap<PlayerId, ws::Sender>, addr: &Address, response: &Respons
                 send_to(Some(ws), response);
             }
         }
-    }
+    };
 }
 
 fn personal(id: PlayerId, r: Request) -> PersonalRequest {
