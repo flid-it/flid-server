@@ -1,5 +1,5 @@
 [package]
-name = "ff-server"
+name = "flid-server"
 version = "0.1.0"
 authors = ["Иван Плесских <terma95@gmail.com>"]
 

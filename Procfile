@@ -1,1 +1,1 @@
-web: ./target/release/ff-server
+web: ./target/release/flid-server
