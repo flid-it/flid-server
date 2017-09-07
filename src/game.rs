@@ -15,6 +15,7 @@ pub enum Response {
     GameState(Game),
     FlowState{flows: Vec<Flow>},
     FlowUpdate{flows: Vec<Flow>},
+    Nop,
 }
 
 #[derive(Clone, Debug)]
@@ -307,10 +308,17 @@ impl Game {
                     }
                 }
                 Request::Calc => {
-                    t = self.calc(t);
-                    AddressResponse {
-                        whom: Address::All,
-                        response: Response::FlowState{flows: self.flows.clone()}
+                    if precise_time_s() - t < 0.2 {
+                        AddressResponse {
+                            whom: Address::None,
+                            response: Response::Nop
+                        }
+                    } else {
+                        t = self.calc(t);
+                        AddressResponse {
+                            whom: Address::All,
+                            response: Response::FlowState { flows: self.flows.clone() }
+                        }
                     }
                 }
                 Request::ChangeFlow {flow_id, dir} => {
