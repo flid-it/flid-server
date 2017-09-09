@@ -173,9 +173,8 @@ impl Game {
 
         //сначала увеличиваем поток в нодах
         //тут мы полагаемся на то, что сначала обработаются линки, а потом ноды
+        let mut inflows = HashMap::new();
         for f in &mut self.flows {
-            let mut inflows = HashMap::new();
-
             match f.host {
                 FlowHost::Link { id, dir, ref mut blobs } => {
                     let link = links[&id];
