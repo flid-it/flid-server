@@ -1,25 +1,14 @@
-#![feature(mpsc_select)]
-
-#[macro_use]
-extern crate log;
-extern crate env_logger;
-extern crate ws;
-extern crate rand;
-extern crate time;
-extern crate serde_json;
-#[macro_use]
-extern crate serde_derive;
-
 mod game;
 
 use std::env;
 use std::thread;
 use std::collections::HashMap;
-use std::sync::mpsc::{channel, Sender, Receiver};
+use crossbeam_channel::{select, unbounded, Sender, Receiver};
 use ws::{listen, Handler, CloseCode};
 use serde_json::{to_string, from_str};
+use log::{debug};
 
-use game::{Game, Response, Address, AddressResponse, Request, PersonalRequest, PlayerId};
+use crate::game::{Game, Response, Address, AddressResponse, Request, PersonalRequest, PlayerId};
 
 enum ServerEvent {
     NewPlayer {id: PlayerId, ws: ws::Sender},
@@ -112,7 +101,7 @@ fn dispatch(
     let mut to_players: HashMap<PlayerId, ws::Sender> = HashMap::new();
     loop {
         select! {
-            server_event = from_server.recv() => {
+            recv(from_server) -> server_event => {
                 let event = server_event.unwrap();
                 match event {
                     ServerEvent::NewPlayer{id, ws} => {
@@ -126,7 +115,7 @@ fn dispatch(
                     }
                 }
             },
-            game_response = from_game.recv() => {
+            recv(from_game) -> game_response => {
                 let response = game_response.unwrap();
                 send(&to_players, &response.whom, &response.response);
             }
@@ -136,7 +125,7 @@ fn dispatch(
 
 
 fn main() {
-    env_logger::init().unwrap();
+    env_logger::init();
 
     let args: Vec<_> = env::args().collect();
     let addr;
@@ -157,9 +146,9 @@ fn main() {
     };
     addr = format!("0.0.0.0:{}", port);
 
-    let (to_game, from_players) = channel();
-    let (to_dispatcher, from_server) = channel();
-    let (to_dispatcher_game, from_game) = channel();
+    let (to_game, from_players) = unbounded();
+    let (to_dispatcher, from_server) = unbounded();
+    let (to_dispatcher_game, from_game) = unbounded();
 
     let to_game2 = to_game.clone();
 
