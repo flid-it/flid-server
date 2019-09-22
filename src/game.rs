@@ -8,15 +8,15 @@ use log::{debug};
 pub type PlayerId = usize;
 pub type NodeId = usize;
 pub type LinkId = usize;
-pub type FlowId = usize;
 
 #[derive(Clone, Debug)]
 #[derive(Serialize)]
 #[serde(tag = "type")]
 pub enum Response {
     GameState(Game),
-    FlowState{flows: Vec<Flow>},
-    FlowUpdate{flows: Vec<Flow>},
+    FlidState{flids: Vec<Flid>},
+    FlidUpdate{flid: Flid},
+    Hello{id: PlayerId},
     Nop,
 }
 
@@ -46,10 +46,11 @@ pub enum ReqDir {
 #[serde(tag = "type")]
 pub enum Request {
     NewPlayer,
+    PlayerExit,
     GetState,
     Restart,
     Calc,
-    ChangeFlow {flow_id: FlowId, dir: ReqDir}
+    Jump {link_id: LinkId},
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -85,31 +86,31 @@ pub struct Link {
 #[derive(Serialize, Deserialize)]
 #[derive(Copy, Clone, Debug)]
 pub enum Dir {
-    None,
-    To1(PlayerId),
-    To2(PlayerId),
+    To1,
+    To2,
 }
 
 #[derive(Serialize, Deserialize)]
 #[derive(Copy, Clone, Debug)]
-pub struct Blob {
-    amount: f32,
+pub struct Jump {
+    id: LinkId,
+    dir: Dir,
+    start_at: f64,
     arrive_at: f64,
 }
 
 #[derive(Serialize, Deserialize)]
-#[derive(Clone, Debug)]
-enum FlowHost {
-    Link{id: LinkId, dir: Dir, blobs: Vec<Blob>},
+#[derive(Copy, Clone, Debug)]
+enum Host {
+    Link(Jump),
     Node(NodeId),
 }
 
 #[derive(Serialize, Deserialize)]
-#[derive(Clone, Debug)]
-pub struct Flow {
-    id: FlowId,
-    amount: f32,
-    host: FlowHost,
+#[derive(Copy, Clone, Debug)]
+pub struct Flid {
+    id: PlayerId,
+    host: Host,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -117,7 +118,14 @@ pub struct Flow {
 pub struct Game {
     pub nodes: Vec<Node>,
     pub links: Vec<Link>,
-    pub flows: Vec<Flow>,
+    pub flids: Vec<Flid>,
+}
+
+fn noop() -> AddressResponse {
+    AddressResponse {
+        whom: Address::None,
+        response: Response::Nop
+    }
 }
 
 impl Point {
@@ -144,25 +152,35 @@ impl Link {
     fn between_ids(&self, n1: &NodeId, n2: &NodeId) -> bool {
         self.has_id(n1) && self.has_id(n2)
     }
+
+    fn dir_from(&self, id: &NodeId) -> Option<Dir> {
+        if self.n1 == *id {
+            Some(Dir::To2)
+        } else if self.n2 == *id {
+            Some(Dir::To1)
+        } else {
+            None
+        }
+    }
 }
 
 impl Game {
     pub fn new() -> Game {
         let nodes = gen_nodes(100);
         let links = gen_links(&nodes);
-        let flows = gen_flows(&nodes, &links);
-        Game {nodes, links, flows}
+        Game {nodes, links, flids: vec!()}
     }
 
     fn renew(&mut self) {
         self.nodes = gen_nodes(100);
         self.links = gen_links(&self.nodes);
-        self.flows = gen_flows(&self.nodes, &self.links);
+        //todo respawn players
+        self.flids = vec!();
     }
 
-    fn calc(&mut self, old_time: f64) -> f64 {
+    fn calc(&mut self, _old_time: f64) -> f64 {
         let new_time = precise_time_s();
-        let dtime = new_time - old_time;
+        //let dtime = new_time - old_time;
 
         let mut nodes = HashMap::new();
         let mut links = HashMap::new();
@@ -173,107 +191,47 @@ impl Game {
             links.insert(l.id, l);
         }
 
-        //сначала увеличиваем поток в нодах
-        //тут мы полагаемся на то, что сначала обработаются линки, а потом ноды
-        let mut inflows = HashMap::new();
-        for f in &mut self.flows {
+        for f in &mut self.flids {
             match f.host {
-                FlowHost::Link { id, dir, ref mut blobs } => {
-                    let link = links[&id];
-                    let to = match dir {
-                        Dir::To1(_) => nodes[&link.n1],
-                        Dir::To2(_) => nodes[&link.n2],
-                        Dir::None => continue,
+                Host::Link(jump) => {
+                    let link = links[&jump.id];
+                    let to = match jump.dir {
+                        Dir::To1 => nodes[&link.n1],
+                        Dir::To2 => nodes[&link.n2],
                     };
 
-                    for &blob in blobs.iter() {
-                        if blob.arrive_at <= new_time {
-                            *inflows.entry(to.id).or_insert(0.) += blob.amount;
-                        }
+                    if jump.arrive_at <= new_time {
+                        f.host = Host::Node(to.id);
                     }
-                    blobs.retain(|&b| b.arrive_at > new_time);
-                }
-                FlowHost::Node(id) => {
-                    f.amount += nodes[&id].size * dtime as f32;
-                    if inflows.contains_key(&id) {
-                        f.amount += inflows[&id];
-                    }
-                }
-            }
-        }
-        //затем откачиваем его
-        //тут мы тоже полагаемся на то, что сначала обработаются линки, а потом ноды
-        let mut outflows = HashMap::new();
-        for f in &mut self.flows {
-            match f.host {
-                FlowHost::Link { id, dir, blobs: _} => {
-                    let link = links[&id];
-                    let from = match dir {
-                        Dir::To1(_) => nodes[&link.n2],
-                        Dir::To2(_) => nodes[&link.n1],
-                        Dir::None => continue,
-                    };
-                    // TODO откачиваемый поток должен зависеть от текущего среднего потока игрока
-                    // + чуть-чуть (чуть-чуть зависит от количества потоков)
-                    // но пока все линки откачивают просто 3 потока в секунду
-                    let amount = dtime as f32 * 3.;
-                    if !outflows.contains_key(&from.id) {
-                        outflows.insert(from.id, vec![amount]);
-                    } else {
-                        outflows.get_mut(&from.id).unwrap().push(amount);
-                    }
-                }
-                FlowHost::Node(id) => {
-                    if outflows.contains_key(&id) {
-                        let outflow = outflows.get_mut(&id).unwrap();
-                        let sum = outflow.iter().fold(0., |acc, &x| acc + x);
-                        if sum < f.amount {
-                            f.amount -= sum;
-                        }
-                        else {
-                            let factor = f.amount / sum;
-                            for a in outflow.iter_mut() {
-                                *a *= factor;
-                            }
-                            f.amount = 0.;
-                        }
-                    }
-                }
-            }
-        }
-        for f in &mut self.flows {
-            match f.host {
-                FlowHost::Link { id, dir, ref mut blobs } => {
-                    let link = links[&id];
-                    let (from, to) = match dir {
-                        Dir::To1(_) => (nodes[&link.n2], nodes[&link.n1]),
-                        Dir::To2(_) => (nodes[&link.n1], nodes[&link.n2]),
-                        Dir::None => continue,
-                    };
-                    let amount = outflows[&from.id][0];
-                    outflows.get_mut(&from.id).unwrap().remove(0);
-                    blobs.push(Blob {amount, arrive_at: new_time + from.time_to(to)});
-                    f.amount = blobs.iter().fold(0., |acc, &b| acc + b.amount);
-                }
-                FlowHost::Node(_) => break,
+                },
+                Host::Node(_) => continue,
             }
         }
         new_time
     }
 
-    fn change_flow(&mut self, flow_id: FlowId, new_dir: Dir) -> Vec<Flow> {
-        let flow = match self.flows.iter_mut().find(|f| f.id == flow_id) {
-            Some(f) => f,
-            None => return vec!(),
-        };
-        match flow.host {
-            FlowHost::Node(_) => vec!(),
-            FlowHost::Link {id, dir: _, blobs: _} => {
-                //TODO тут надо смотреть, может ли игрок поменять направление
-                flow.host = FlowHost::Link{id, dir: new_dir, blobs: vec!()};
-                vec![flow.clone()]
-            }
+    fn jump(&self, host: &Host, link: &Link, time: f64) -> Option<Jump> {
+        match host {
+            Host::Link(_) => None,
+            Host::Node(node_id) => {
+                if let Some(dir) = link.dir_from(&node_id) {
+                    Some(Jump {
+                        id: link.id,
+                        dir,
+                        start_at: time,
+                        arrive_at: time + self.time(link),
+                    })
+                } else {
+                    None
+                }
+            },
         }
+    }
+
+    fn time(&self, link: &Link) -> f64 {
+        let n1 = self.nodes.iter().find(|f| f.id == link.n1).unwrap();
+        let n2 = self.nodes.iter().find(|f| f.id == link.n2).unwrap();
+        n1.time_to(n2)
     }
 
     pub fn main_loop(mut self,
@@ -287,12 +245,31 @@ impl Game {
 
             let resp = match p_req.request {
                 Request::NewPlayer => {
-                    t = self.calc(t);
-                    AddressResponse {
+                    let node = self.nodes[thread_rng().gen_range(0, self.nodes.len())];
+                    let flid = Flid {
+                        id,
+                        host: Host::Node(node.id),
+                    };
+                    self.flids.push(flid);
+
+                    outgoing.send(AddressResponse {
                         whom: Address::Player(id),
+                        response: Response::Hello{id},
+                    }).unwrap();
+
+                    AddressResponse {
+                        whom: Address::All,
                         response: Response::GameState(self.clone())
                     }
                 }
+                Request::PlayerExit => {
+                    self.flids.retain(|f| f.id != id);
+
+                    AddressResponse {
+                        whom: Address::All,
+                        response: Response::GameState(self.clone())
+                    }
+                },
                 Request::GetState => {
                     t = self.calc(t);
                     AddressResponse {
@@ -310,27 +287,31 @@ impl Game {
                 }
                 Request::Calc => {
                     if precise_time_s() - t < 0.2 {
-                        AddressResponse {
-                            whom: Address::None,
-                            response: Response::Nop
-                        }
+                        noop()
                     } else {
                         t = self.calc(t);
                         AddressResponse {
                             whom: Address::All,
-                            response: Response::FlowState { flows: self.flows.clone() }
+                            response: Response::FlidState { flids: self.flids.clone() }
                         }
                     }
                 }
-                Request::ChangeFlow {flow_id, dir} => {
-                    let d = match dir {
-                        ReqDir::To1 => Dir::To1(id),
-                        ReqDir::To2 => Dir::To2(id),
-                    };
-                    let update = self.change_flow(flow_id, d);
-                    AddressResponse {
-                        whom: if update.len() > 0 {Address::All} else {Address::None},
-                        response: Response::FlowUpdate{flows: update}
+                Request::Jump {link_id} => {
+                    let flid = self.flids.iter().find(|f| f.id == id).unwrap();
+                    let link = self.links.iter().find(|l| l.id == link_id);
+                    match link {
+                        None => noop(),
+                        Some(l) => match self.jump(&flid.host, l, t) {
+                            None => noop(),
+                            Some(jump) => {
+                                let flid = self.flids.iter_mut().find(|f| f.id == id).unwrap();
+                                flid.host = Host::Link(jump);
+                                AddressResponse {
+                                    whom: Address::All,
+                                    response: Response::FlidUpdate{flid: flid.clone()},
+                                }
+                            },
+                        },
                     }
                 }
             };
@@ -392,29 +373,6 @@ fn gen_links(nodes: &[Node]) -> Vec<Link> {
                 res.push(Link{id, quality: rng.gen_range(0.01, 0.99), n1: node.id, n2: n.id});
             }
         }
-    }
-    res
-}
-
-fn gen_flows(nodes: &[Node], links: &[Link]) -> Vec<Flow> {
-    let mut res = vec!();
-    //порядок генерации (сначала линки, потом ноды) важен!
-    //обсчет тика полагается на то, что сначала идут линки!
-    for &link in links {
-        let id = res.len();
-        res.push(Flow {
-            id,
-            amount: 0.,
-            host: FlowHost::Link {
-                id: link.id,
-                dir: Dir::None,
-                blobs: vec!(),
-            }
-        });
-    }
-    for &node in nodes {
-        let id = res.len();
-        res.push(Flow{id, amount: 0., host: FlowHost::Node(node.id)});
     }
     res
 }

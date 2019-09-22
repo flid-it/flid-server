@@ -45,7 +45,7 @@ impl Handler for PlayerHandler {
             debug!("Player {} sent non-text message!", self.id)
         }
 
-        return Ok(())
+        Ok(())
     }
 
     fn on_close(&mut self, code: CloseCode, reason: &str) {
@@ -112,6 +112,7 @@ fn dispatch(
                     ServerEvent::PlayerExit{id} => {
                         debug!("Remove player {} from dispatcher", id);
                         to_players.remove(&id);
+                        to_game.send(personal(id, Request::PlayerExit)).unwrap();
                     }
                 }
             },

@@ -5,8 +5,8 @@ authors = ["Иван Плесских <terma95@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-ws = "0.7"
-rand = "0.3"
+ws = "0.9"
+rand = "0.7"
 serde_json = "1.0"
 serde_derive = "1.0"
 serde = "*"
