@@ -1,5 +1,7 @@
+use std::thread::{spawn, sleep};
+use std::time::Duration;
 use rand::{thread_rng, Rng};
-use crossbeam_channel::{Sender, Receiver};
+use crossbeam_channel::{Sender, Receiver, unbounded, select};
 use time::precise_time_s;
 use std::collections::HashMap;
 use serde_derive::{Serialize, Deserialize};
@@ -16,13 +18,11 @@ pub enum Response {
     GameState(Game),
     FlidState{flids: Vec<Flid>},
     FlidUpdate{flid: Flid},
-    Hello{id: PlayerId},
-    Nop,
+    Hello{id: PlayerId, time: f64},
 }
 
 #[derive(Clone, Debug)]
 pub enum Address {
-    None,
     Player(PlayerId),
     //SomePlayers(Vec<PlayerId>),
     All,
@@ -47,9 +47,9 @@ pub enum ReqDir {
 pub enum Request {
     NewPlayer,
     PlayerExit,
+    Hello,
     GetState,
     Restart,
-    Calc,
     Jump {link_id: LinkId},
 }
 
@@ -116,16 +116,10 @@ pub struct Flid {
 #[derive(Serialize, Deserialize)]
 #[derive(Clone, Debug)]
 pub struct Game {
+    pub time: f64,
     pub nodes: Vec<Node>,
     pub links: Vec<Link>,
     pub flids: Vec<Flid>,
-}
-
-fn noop() -> AddressResponse {
-    AddressResponse {
-        whom: Address::None,
-        response: Response::Nop
-    }
 }
 
 impl Point {
@@ -168,19 +162,20 @@ impl Game {
     pub fn new() -> Game {
         let nodes = gen_nodes(100);
         let links = gen_links(&nodes);
-        Game {nodes, links, flids: vec!()}
+        Game {nodes, links, flids: vec!(), time: precise_time_s()}
     }
 
     fn renew(&mut self) {
         self.nodes = gen_nodes(100);
         self.links = gen_links(&self.nodes);
+        self.time = precise_time_s();
         //todo respawn players
         self.flids = vec!();
     }
 
-    fn calc(&mut self, _old_time: f64) -> f64 {
+    fn calc(&mut self) {
         let new_time = precise_time_s();
-        //let dtime = new_time - old_time;
+        //let dtime = new_time - self.time;
 
         let mut nodes = HashMap::new();
         let mut links = HashMap::new();
@@ -204,13 +199,13 @@ impl Game {
                         f.host = Host::Node(to.id);
                     }
                 },
-                Host::Node(_) => continue,
+                Host::Node(_) => (),
             }
         }
-        new_time
+        self.time = new_time;
     }
 
-    fn jump(&self, host: &Host, link: &Link, time: f64) -> Option<Jump> {
+    fn jump(&self, host: &Host, link: &Link) -> Option<Jump> {
         match host {
             Host::Link(_) => None,
             Host::Node(node_id) => {
@@ -218,8 +213,8 @@ impl Game {
                     Some(Jump {
                         id: link.id,
                         dir,
-                        start_at: time,
-                        arrive_at: time + self.time(link),
+                        start_at: self.time,
+                        arrive_at: self.time + self.link_time(link),
                     })
                 } else {
                     None
@@ -228,7 +223,7 @@ impl Game {
         }
     }
 
-    fn time(&self, link: &Link) -> f64 {
+    fn link_time(&self, link: &Link) -> f64 {
         let n1 = self.nodes.iter().find(|f| f.id == link.n1).unwrap();
         let n2 = self.nodes.iter().find(|f| f.id == link.n2).unwrap();
         n1.time_to(n2)
@@ -237,87 +232,81 @@ impl Game {
     pub fn main_loop(mut self,
                      incoming: Receiver<PersonalRequest>,
                      outgoing: Sender<AddressResponse>) {
-        let mut t = precise_time_s();
-        loop {
-            let p_req = incoming.recv().unwrap();
-            let id = p_req.player;
-            debug!("Game request: {:?}", p_req);
+        let (to_tick, tick) = unbounded::<()>();
+        spawn(move || {
+            loop {
+                sleep(Duration::from_millis(500));
+                to_tick.send(()).unwrap();
+            }
+        });
 
-            let resp = match p_req.request {
-                Request::NewPlayer => {
-                    let node = self.nodes[thread_rng().gen_range(0, self.nodes.len())];
-                    let flid = Flid {
-                        id,
-                        host: Host::Node(node.id),
-                    };
-                    self.flids.push(flid);
-
-                    outgoing.send(AddressResponse {
-                        whom: Address::Player(id),
-                        response: Response::Hello{id},
-                    }).unwrap();
-
-                    AddressResponse {
-                        whom: Address::All,
-                        response: Response::GameState(self.clone())
-                    }
-                }
-                Request::PlayerExit => {
-                    self.flids.retain(|f| f.id != id);
-
-                    AddressResponse {
-                        whom: Address::All,
-                        response: Response::GameState(self.clone())
-                    }
-                },
-                Request::GetState => {
-                    t = self.calc(t);
-                    AddressResponse {
-                        whom: Address::Player(id),
-                        response: Response::GameState(self.clone())
-                    }
-                }
-                Request::Restart => {
-                    self.renew();
-                    t = precise_time_s();
-                    AddressResponse {
-                        whom: Address::All,
-                        response: Response::GameState(self.clone())
-                    }
-                }
-                Request::Calc => {
-                    if precise_time_s() - t < 0.2 {
-                        noop()
-                    } else {
-                        t = self.calc(t);
-                        AddressResponse {
-                            whom: Address::All,
-                            response: Response::FlidState { flids: self.flids.clone() }
-                        }
-                    }
-                }
-                Request::Jump {link_id} => {
-                    let flid = self.flids.iter().find(|f| f.id == id).unwrap();
-                    let link = self.links.iter().find(|l| l.id == link_id);
-                    match link {
-                        None => noop(),
-                        Some(l) => match self.jump(&flid.host, l, t) {
-                            None => noop(),
-                            Some(jump) => {
-                                let flid = self.flids.iter_mut().find(|f| f.id == id).unwrap();
-                                flid.host = Host::Link(jump);
-                                AddressResponse {
-                                    whom: Address::All,
-                                    response: Response::FlidUpdate{flid: flid.clone()},
-                                }
-                            },
-                        },
-                    }
-                }
-            };
+        let send = move |whom: Address, response: Response| {
+            let resp = AddressResponse{whom, response};
             debug!("Game response: {:?}", resp);
             outgoing.send(resp).unwrap();
+        };
+
+        loop {
+            select!(
+                recv(incoming) -> req_opt => {
+                    let req = req_opt.unwrap();
+                    debug!("Game request: {:?}", req);
+                    self.proc_request(req.player, req.request, &send);
+                },
+                recv(tick) -> _ => {
+                    debug!("Game tick");
+                    self.calc();
+                    send(Address::All, Response::FlidState { flids: self.flids.clone() })
+                },
+            );
         }
+    }
+
+    fn proc_request<F>(&mut self, player: PlayerId, request: Request, send: &F) where F: Fn(Address, Response) {
+        let id = player;
+
+        match request {
+            Request::Hello => {
+                send(Address::Player(id), Response::Hello{id, time: self.time});
+            }
+            Request::NewPlayer => {
+                let node = self.nodes[thread_rng().gen_range(0, self.nodes.len())];
+                let flid = Flid {
+                    id,
+                    host: Host::Node(node.id),
+                };
+                self.flids.push(flid);
+
+                send(Address::Player(id), Response::Hello{id, time: self.time});
+                send(Address::All, Response::GameState(self.clone()));
+            }
+            Request::PlayerExit => {
+                self.flids.retain(|f| f.id != id);
+
+                send(Address::All, Response::GameState(self.clone()))
+            }
+            Request::GetState => {
+                send(Address::Player(id), Response::GameState(self.clone()))
+            }
+            Request::Restart => {
+                self.renew();
+                send(Address::All, Response::GameState(self.clone()))
+            }
+            Request::Jump {link_id} => {
+                let flid = self.flids.iter().find(|f| f.id == id).unwrap();
+                match self.links.iter().find(|l| l.id == link_id) {
+                    None => (),
+                    Some(link) => match self.jump(&flid.host, link) {
+                        None => (),
+                        Some(jump) => {
+                            let flid = self.flids.iter_mut().find(|f| f.id == id).unwrap();
+                            flid.host = Host::Link(jump);
+                            send(Address::All, Response::FlidUpdate{flid: flid.clone()})
+                        },
+                    },
+                }
+            }
+        };
     }
 }
 
