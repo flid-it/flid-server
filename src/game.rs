@@ -226,7 +226,7 @@ impl Game {
     fn link_time(&self, link: &Link) -> f64 {
         let n1 = self.nodes.iter().find(|f| f.id == link.n1).unwrap();
         let n2 = self.nodes.iter().find(|f| f.id == link.n2).unwrap();
-        n1.time_to(n2)
+        n1.time_to(n2)// / (link.quality as f64 * 0.7 + 0.3)
     }
 
     pub fn main_loop(mut self,
